@@ -22,7 +22,7 @@ name = "server"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy_eventwork = { version = "0.8", default-features = false }
+bevy_eventwork = { path = "../bevy_eventwork", default-features = false }
 # This is a bevy plugin
 bevy = { version = "0.13.0", features = [], default-features = false }
 # Used for on wire serialization
@@ -37,6 +37,8 @@ futures = { version = "0.3.29" }
 
 # Used 1.33.0or Stream type and other ext
 futures-lite = "2.0.0"
+serde = { version = "1.0.190", features = ["derive"] }
+serde_json = { version = "1.0.108" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-tungstenite = { version = "0.25.0", features = ["async-std-runtime"] }
@@ -49,5 +51,3 @@ async_io_stream = { version = "0.3.3" }
 
 [dev-dependencies]
 bevy = { version = "0.13.0", features = ["default_font"] }
-serde = { version = "1.0.190", features = ["derive"] }
-serde_json = { version = "1.0.108" }

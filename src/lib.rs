@@ -25,7 +25,6 @@ mod native_websocket {
     use futures::AsyncReadExt;
     use futures_lite::{AsyncWriteExt, Future, FutureExt, Stream};
     use ws_stream_tungstenite::WsStream;
-
     /// A provider for WebSockets
     #[derive(Default, Debug)]
     pub struct NativeWesocketProvider;
@@ -67,42 +66,45 @@ mod native_websocket {
                 Some(*network_settings),
             )
             .await
-            .map_err(|error| match error {
-                async_tungstenite::tungstenite::Error::ConnectionClosed => {
-                    NetworkError::Error(String::from("Connection closed"))
-                }
-                async_tungstenite::tungstenite::Error::AlreadyClosed => {
-                    NetworkError::Error(String::from("Connection was already closed"))
-                }
-                async_tungstenite::tungstenite::Error::Io(io_error) => {
-                    NetworkError::Error(format!("Io Error: {}", io_error))
-                }
-                async_tungstenite::tungstenite::Error::Tls(tls_error) => {
-                    NetworkError::Error(format!("Tls Error: {}", tls_error))
-                }
-                async_tungstenite::tungstenite::Error::Capacity(cap) => {
-                    NetworkError::Error(format!("Capacity Error: {}", cap))
-                }
-                async_tungstenite::tungstenite::Error::Protocol(proto) => {
-                    NetworkError::Error(format!("Protocol Error: {}", proto))
-                }
-                async_tungstenite::tungstenite::Error::WriteBufferFull(buf) => {
-                    NetworkError::Error(format!("Write Buffer Full Error: {}", buf))
-                }
-                async_tungstenite::tungstenite::Error::Utf8 => {
-                    NetworkError::Error(format!("Utf8 Error"))
-                }
-                async_tungstenite::tungstenite::Error::AttackAttempt => {
-                    NetworkError::Error(format!("Attack Attempt"))
-                }
-                async_tungstenite::tungstenite::Error::Url(url) => {
-                    NetworkError::Error(format!("Url Error: {}", url))
-                }
-                async_tungstenite::tungstenite::Error::Http(http) => {
-                    NetworkError::Error(format!("HTTP Error: {:?}", http))
-                }
-                async_tungstenite::tungstenite::Error::HttpFormat(http_format) => {
-                    NetworkError::Error(format!("HTTP Format Error: {}", http_format))
+            .map_err(|error| {
+                info!("Connection failed: {:?}", error);
+                match error {
+                    async_tungstenite::tungstenite::Error::ConnectionClosed => {
+                        NetworkError::Error(String::from("Connection closed"))
+                    }
+                    async_tungstenite::tungstenite::Error::AlreadyClosed => {
+                        NetworkError::Error(String::from("Connection was already closed"))
+                    }
+                    async_tungstenite::tungstenite::Error::Io(io_error) => {
+                        NetworkError::Error(format!("Io Error: {}", io_error))
+                    }
+                    async_tungstenite::tungstenite::Error::Tls(tls_error) => {
+                        NetworkError::Error(format!("Tls Error: {}", tls_error))
+                    }
+                    async_tungstenite::tungstenite::Error::Capacity(cap) => {
+                        NetworkError::Error(format!("Capacity Error: {}", cap))
+                    }
+                    async_tungstenite::tungstenite::Error::Protocol(proto) => {
+                        NetworkError::Error(format!("Protocol Error: {}", proto))
+                    }
+                    async_tungstenite::tungstenite::Error::WriteBufferFull(buf) => {
+                        NetworkError::Error(format!("Write Buffer Full Error: {}", buf))
+                    }
+                    async_tungstenite::tungstenite::Error::Utf8 => {
+                        NetworkError::Error(format!("Utf8 Error"))
+                    }
+                    async_tungstenite::tungstenite::Error::AttackAttempt => {
+                        NetworkError::Error(format!("Attack Attempt"))
+                    }
+                    async_tungstenite::tungstenite::Error::Url(url) => {
+                        NetworkError::Error(format!("Url Error: {}", url))
+                    }
+                    async_tungstenite::tungstenite::Error::Http(http) => {
+                        NetworkError::Error(format!("HTTP Error: {:?}", http))
+                    }
+                    async_tungstenite::tungstenite::Error::HttpFormat(http_format) => {
+                        NetworkError::Error(format!("HTTP Format Error: {}", http_format))
+                    }
                 }
             })?;
             info!("Connected!");
@@ -117,7 +119,9 @@ mod native_websocket {
             let mut buffer = vec![0; settings.max_message_size.unwrap_or(64 << 20)];
             loop {
                 info!("Reading message length");
-                let length = match read_half.read(&mut buffer[..8]).await {
+                let r = read_half.read(&mut buffer[..8]).await;
+                info!("Read result: {:?}", r);
+                let length = match r {
                     Ok(0) => {
                         // EOF, meaning the TCP stream has closed.
                         info!("Client disconnected");
@@ -312,6 +316,8 @@ mod wasm_websocket {
     use futures_lite::{AsyncWriteExt, Future, FutureExt, Stream};
     use ws_stream_wasm::{WsMeta, WsStream, WsStreamIo};
 
+    use serde::{Deserialize, Serialize};
+
     /// A provider for WebSockets
     #[derive(Default, Debug)]
     pub struct WasmWebSocketProvider;
@@ -386,73 +392,43 @@ mod wasm_websocket {
             messages: Sender<NetworkPacket>,
             settings: Self::NetworkSettings,
         ) {
+            // Duplicate!
+            #[derive(Serialize, Deserialize, Clone, Debug)]
+            pub struct OpenHabState {
+                pub topic: String,
+                pub payload: String,
+                #[serde(rename = "type")]
+                pub ohtype: Option<String>,
+            }
+
             let mut buffer = vec![0; settings.max_message_size];
             loop {
                 info!("Reading message length");
-                let length = match read_half.read(&mut buffer[..8]).await {
-                    Ok(0) => {
-                        // EOF, meaning the TCP stream has closed.
-                        info!("Client disconnected");
-                        // TODO: probably want to do more than just quit the receive task.
-                        //       to let eventwork know that the peer disconnected.
+                let num_read = read_half.read(&mut buffer).await.unwrap();
+                let raw_state =
+                    std::string::String::from_utf8(buffer[..num_read].to_vec()).unwrap();
+                info!("Received content: {:?}", raw_state);
+
+                match num_read {
+                    0 => {
+                        info!("Socket disconnected");
                         break;
                     }
-                    Ok(8) => {
-                        let bytes = &buffer[..8];
-                        u64::from_le_bytes(
-                            bytes
-                                .try_into()
-                                .expect("Couldn't read bytes from connection!"),
-                        ) as usize
-                    }
-                    Ok(n) => {
-                        error!(
-                            "Could not read enough bytes for header. Expected 8, got {}",
-                            n
-                        );
-                        break;
-                    }
-                    Err(err) => {
-                        error!("Encountered error while fetching length: {}", err);
-                        break;
+                    _ => {
+                        // Deserialize Json to struct
+                        let state: serde_json::Result<OpenHabState> =
+                            serde_json::from_str(&raw_state);
+
+                        // Serialize struct to raw bytes using bincode
+                        if let Ok(state) = state {
+                            let packet = NetworkPacket {
+                                kind: "OpenHab".to_string(),
+                                data: bincode::serialize(&state).unwrap(),
+                            };
+                            messages.send(packet).await.unwrap();
+                        }
                     }
                 };
-                info!("Message length: {}", length);
-
-                if length > settings.max_message_size {
-                    error!(
-                        "Received too large packet: {} > {}",
-                        length, settings.max_message_size
-                    );
-                    break;
-                }
-
-                info!("Reading message into buffer");
-                match read_half.read_exact(&mut buffer[..length]).await {
-                    Ok(()) => (),
-                    Err(err) => {
-                        error!(
-                            "Encountered error while fetching stream of length {}: {}",
-                            length, err
-                        );
-                        break;
-                    }
-                }
-                info!("Message read");
-
-                let packet: NetworkPacket = match bincode::deserialize(&buffer[..length]) {
-                    Ok(packet) => packet,
-                    Err(err) => {
-                        error!("Failed to decode network packet from: {}", err);
-                        break;
-                    }
-                };
-
-                if messages.send(packet).await.is_err() {
-                    error!("Failed to send decoded message to eventwork");
-                    break;
-                }
-                info!("Message deserialized and sent to eventwork");
             }
         }
 
