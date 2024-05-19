@@ -25,6 +25,9 @@ mod native_websocket {
     use futures::AsyncReadExt;
     use futures_lite::{AsyncWriteExt, Future, FutureExt, Stream};
     use ws_stream_tungstenite::WsStream;
+
+    use serde::{Deserialize, Serialize};
+
     /// A provider for WebSockets
     #[derive(Default, Debug)]
     pub struct NativeWesocketProvider;
@@ -116,76 +119,67 @@ mod native_websocket {
             messages: Sender<NetworkPacket>,
             settings: Self::NetworkSettings,
         ) {
+            #[derive(Serialize, Deserialize, Clone, Debug)]
+            pub struct OpenHabState {
+                pub topic: String,
+                pub payload: String,
+                #[serde(rename = "type")]
+                pub ohtype: Option<String>,
+            }
+
             let mut buffer = vec![0; settings.max_message_size.unwrap_or(64 << 20)];
             loop {
-                info!("Reading message length");
-                let r = read_half.read(&mut buffer[..8]).await;
-                info!("Read result: {:?}", r);
-                let length = match r {
-                    Ok(0) => {
-                        // EOF, meaning the TCP stream has closed.
-                        info!("Client disconnected");
-                        // TODO: probably want to do more than just quit the receive task.
-                        //       to let eventwork know that the peer disconnected.
+                //info!("Reading message length");
+                let mut num_read = read_half.read(&mut buffer).await.unwrap();
+                //info!("Received content: {:?}", raw_state);
+
+                match num_read {
+                    0 => {
+                        error!("Socket disconnected - read() returned 0 bytes.");
                         break;
                     }
-                    Ok(8) => {
-                        let bytes = &buffer[..8];
-                        u64::from_le_bytes(
-                            bytes
-                                .try_into()
-                                .expect("Couldn't read bytes from connection!"),
-                        ) as usize
-                    }
-                    Ok(n) => {
-                        error!(
-                            "Could not read enough bytes for header. Expected 8, got {}",
-                            n
-                        );
-                        break;
-                    }
-                    Err(err) => {
-                        error!("Encountered error while fetching length: {}", err);
-                        break;
+                    _ => {
+                        // Tungestenite might give us several messages, so we need to
+                        // dissassemble them first here.
+
+                        // Get copy of data
+                        let mut b = buffer.clone();
+
+                        while num_read > 0 {
+                            // It's getting a bit out of hand with the cloning now ..
+                            let len_bytes: Vec<u8> = b.drain(0..8).collect();
+                            let len = usize::from_ne_bytes(
+                                len_bytes.try_into().expect("Not enough data"),
+                            );
+                            num_read -= 8;
+
+                            assert!(len > 0 && len < buffer.len());
+
+                            let message_bytes: Vec<u8> = b.drain(..len).collect();
+                            let raw_state = std::string::String::from_utf8(message_bytes).unwrap();
+                            num_read -= len;
+
+                            trace!("Received message! {}", raw_state);
+
+                            // Deserialize Json to struct
+                            let state: serde_json::Result<OpenHabState> =
+                                serde_json::from_str(&raw_state);
+
+                            trace!("Parsed message: {:?}", state);
+
+                            // Serialize struct to raw bytes using bincode
+                            if let Ok(state) = state {
+                                let packet = NetworkPacket {
+                                    kind: "OpenHab".to_string(),
+                                    data: bincode::serialize(&state).unwrap(),
+                                };
+                                messages.send(packet).await.unwrap();
+                            } else {
+                                error!("Failed to parse message {}", raw_state);
+                            }
+                        }
                     }
                 };
-                info!("Message length: {}", length);
-
-                if length > settings.max_message_size.unwrap_or(64 << 20) {
-                    error!(
-                        "Received too large packet: {} > {}",
-                        length,
-                        settings.max_message_size.unwrap_or(64 << 20)
-                    );
-                    break;
-                }
-
-                info!("Reading message into buffer");
-                match read_half.read_exact(&mut buffer[..length]).await {
-                    Ok(()) => (),
-                    Err(err) => {
-                        error!(
-                            "Encountered error while fetching stream of length {}: {}",
-                            length, err
-                        );
-                        break;
-                    }
-                }
-                info!("Message read");
-
-                let packet: NetworkPacket = match bincode::deserialize(&buffer[..length]) {
-                    Ok(packet) => packet,
-                    Err(err) => {
-                        error!("Failed to decode network packet from: {}", err);
-                        break;
-                    }
-                };
-
-                if messages.send(packet).await.is_err() {
-                    error!("Failed to send decoded message to eventwork");
-                    break;
-                }
-                info!("Message deserialized and sent to eventwork");
             }
         }
 
@@ -403,11 +397,11 @@ mod wasm_websocket {
 
             let mut buffer = vec![0; settings.max_message_size];
             loop {
-                info!("Reading message length");
+                //info!("Reading message length");
                 let num_read = read_half.read(&mut buffer).await.unwrap();
                 let raw_state =
                     std::string::String::from_utf8(buffer[..num_read].to_vec()).unwrap();
-                info!("Received content: {:?}", raw_state);
+                //info!("Received content: {:?}", raw_state);
 
                 match num_read {
                     0 => {

@@ -42,7 +42,7 @@ serde_json = { version = "1.0.108" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-tungstenite = { version = "0.25.0", features = ["async-std-runtime"] }
-ws_stream_tungstenite = { version = "0.13.0" }
+ws_stream_tungstenite = { path = "../ws_stream_tungstenite" }
 async-std = { version = "1.12.0" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
