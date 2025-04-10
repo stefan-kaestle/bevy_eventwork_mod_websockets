@@ -289,6 +289,7 @@ mod wasm_websocket {
     };
     use futures_lite::Stream;
     use send_wrapper::SendWrapper;
+    use serde::{Deserialize, Serialize};
     use tokio_tungstenite_wasm::{Message, WebSocketStream};
 
     /// A provider for WebSockets
@@ -378,6 +379,15 @@ mod wasm_websocket {
             messages: Sender<NetworkPacket>,
             _settings: Self::NetworkSettings,
         ) {
+            // Duplicate!
+            #[derive(Serialize, Deserialize, Clone, Debug)]
+            pub struct OpenHabState {
+                pub topic: String,
+                pub payload: String,
+                #[serde(rename = "type")]
+                pub ohtype: Option<String>,
+            }
+
             loop {
                 let message = match read_half.next().await {
                     Some(message) => match message {
@@ -399,30 +409,44 @@ mod wasm_websocket {
                     }
                 };
 
-                let packet = match message {
-                    Message::Text(_) => {
-                        error!("Text Message Received");
-                        break;
-                    }
-                    Message::Binary(binary) => match bincode::deserialize(&binary) {
-                        Ok(packet) => packet,
-                        Err(err) => {
-                            error!("Failed to decode network packet from: {}", err);
-                            break;
+                match message {
+                    Message::Text(s) => {
+                        // Deserialize Json to struct
+                        let state: serde_json::Result<OpenHabState> = serde_json::from_str(&s);
+
+                        // Serialize struct to raw bytes using bincode
+                        if let Ok(state) = state {
+                            let packet = NetworkPacket {
+                                kind: "OpenHab".to_string(),
+                                data: bincode::serialize(&state).unwrap(),
+                            };
+                            messages.send(packet).await.unwrap();
                         }
-                    },
+                    }
+                    Message::Binary(binary) => {
+                        loop {
+                            let raw_state = std::string::String::from_utf8(binary.clone()).unwrap();
+
+                            // Deserialize Json to struct
+                            let state: serde_json::Result<OpenHabState> =
+                                serde_json::from_str(&raw_state);
+
+                            // Serialize struct to raw bytes using bincode
+                            if let Ok(state) = state {
+                                let packet = NetworkPacket {
+                                    kind: "OpenHab".to_string(),
+                                    data: bincode::serialize(&state).unwrap(),
+                                };
+                                messages.send(packet).await.unwrap();
+                            }
+                        }
+                    }
 
                     Message::Close(_) => {
                         error!("Connection Closed");
                         break;
                     }
                 };
-
-                if messages.send(packet).await.is_err() {
-                    error!("Failed to send decoded message to eventwork");
-                    break;
-                }
-                info!("Message deserialized and sent to eventwork");
             }
         }
 
