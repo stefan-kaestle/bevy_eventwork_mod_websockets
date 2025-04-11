@@ -30,6 +30,7 @@ mod native_websocket {
         SinkExt, StreamExt,
     };
     use futures_lite::{Future, FutureExt, Stream};
+    use serde::{Deserialize, Serialize};
 
     /// A provider for WebSockets
     #[derive(Default, Debug)]
@@ -119,6 +120,15 @@ mod native_websocket {
             messages: Sender<NetworkPacket>,
             _settings: Self::NetworkSettings,
         ) {
+            // Duplicate!
+            #[derive(Serialize, Deserialize, Clone, Debug)]
+            pub struct OpenHabState {
+                pub topic: String,
+                pub payload: String,
+                #[serde(rename = "type")]
+                pub ohtype: Option<String>,
+            }
+
             loop {
                 let message = match read_half.next().await {
                     Some(message) => match message {
@@ -140,10 +150,19 @@ mod native_websocket {
                     }
                 };
 
-                let packet = match message {
-                    Message::Text(_) => {
-                        error!("Text Message Received");
-                        break;
+                match message {
+                    Message::Text(s) => {
+                        // Deserialize Json to struct
+                        let state: serde_json::Result<OpenHabState> = serde_json::from_str(&s);
+
+                        // Serialize struct to raw bytes using bincode
+                        if let Ok(state) = state {
+                            let packet = NetworkPacket {
+                                kind: "OpenHab".to_string(),
+                                data: bincode::serialize(&state).unwrap(),
+                            };
+                            messages.send(packet).await.unwrap();
+                        }
                     }
                     Message::Binary(binary) => match bincode::deserialize(&binary) {
                         Ok(packet) => packet,
@@ -166,12 +185,6 @@ mod native_websocket {
                     }
                     Message::Frame(_) => todo!(),
                 };
-
-                if messages.send(packet).await.is_err() {
-                    error!("Failed to send decoded message to eventwork");
-                    break;
-                }
-                info!("Message deserialized and sent to eventwork");
             }
         }
 
